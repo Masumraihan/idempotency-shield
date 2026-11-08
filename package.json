@@ -1,0 +1,97 @@
+{
+  "name": "@http-state/idempotency-shield",
+  "version": "1.0.0",
+  "description": "An HTTP idempotency component for Express and NestJS complying with IETF standards.",
+  "keywords": [
+    "idempotency",
+    "idempotency-key",
+    "express",
+    "nestjs",
+    "middleware",
+    "interceptor",
+    "http"
+  ],
+  "author": "Masum Raihan",
+  "license": "ISC",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./express": {
+      "types": "./dist/express-mw.d.ts",
+      "default": "./dist/express-mw.js"
+    },
+    "./nest": {
+      "types": "./dist/nest-decorator.d.ts",
+      "default": "./dist/nest-decorator.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "express": [
+        "dist/express-mw.d.ts"
+      ],
+      "nest": [
+        "dist/nest-decorator.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.map",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
+    "test": "npm run build && node --test test/storage.test.cjs test/express.test.cjs test/nest.test.cjs test/redis.test.cjs",
+    "prepublishOnly": "npm test",
+    "demo": "npm run build && node examples/scenario.cjs",
+    "demo:server": "npm run build && node examples/server.cjs",
+    "demo:redis": "npm run build && node examples/two-servers.cjs"
+  },
+  "peerDependencies": {
+    "@nestjs/common": ">=9.0.0",
+    "@nestjs/core": ">=9.0.0",
+    "@types/express": ">=4.17.0",
+    "rxjs": ">=7.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
+    "@types/express": {
+      "optional": true
+    },
+    "rxjs": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.2.8",
+    "@nestjs/core": "^11.2.8",
+    "@nestjs/platform-express": "^11.2.8",
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.19.43",
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0",
+    "redis": "^6.3.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typescript": "^7.0.2"
+  }
+}
