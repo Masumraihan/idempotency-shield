@@ -2,14 +2,25 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn, spawnSync } = require("node:child_process");
 const net = require("node:net");
+const { randomUUID } = require("node:crypto");
 const express = require("express");
 const Redis = require("ioredis");
 const { createClient } = require("redis");
 const { idempotencyShield, RedisIdempotencyStore } = require("../dist");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const hasRedis = spawnSync("redis-server", ["--version"]).status === 0;
-const skip = hasRedis ? false : "redis-server is not installed";
+
+// Set REDIS_URL to run against an existing Redis (for example a Docker container).
+// Otherwise the test starts its own throwaway redis-server, if one is installed.
+const externalUrl = process.env.REDIS_URL;
+const hasRedisServer = spawnSync("redis-server", ["--version"]).status === 0;
+const skip =
+  externalUrl || hasRedisServer
+    ? false
+    : "no Redis available: install redis-server or set REDIS_URL (see README)";
+
+// Every key written by this file starts with this prefix, so a shared Redis is never touched otherwise.
+const RUN = `idem-test-${randomUUID()}:`;
 
 function freePort() {
   return new Promise((resolve) => {
@@ -20,24 +31,54 @@ function freePort() {
   });
 }
 
-// Starts a throwaway Redis server for the whole file and stops it afterwards.
-async function startRedis() {
-  const port = await freePort();
-  const proc = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no"], {
-    stdio: "ignore",
-  });
-  const probe = new Redis(port, "127.0.0.1", { lazyConnect: true, maxRetriesPerRequest: 1 });
-  for (let i = 0; i < 50; i++) {
+async function waitForRedis(url) {
+  // The error listener keeps ioredis from printing "Unhandled error event" while we retry.
+  const probe = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null });
+  probe.on("error", () => {});
+  for (let i = 0; i < 30; i++) {
     try {
       await probe.connect();
       await probe.ping();
-      break;
+      probe.disconnect();
+      return true;
     } catch {
       await sleep(100);
     }
   }
   probe.disconnect();
-  return { port, stop: () => proc.kill() };
+  return false;
+}
+
+// Uses REDIS_URL when given, otherwise starts a throwaway redis-server for this file.
+async function startRedis() {
+  if (externalUrl) {
+    if (!(await waitForRedis(externalUrl))) {
+      throw new Error(`Cannot connect to REDIS_URL (${externalUrl}). Is Redis running and is the port published?`);
+    }
+    return { url: externalUrl, stop: () => {} };
+  }
+
+  const port = await freePort();
+  const url = `redis://127.0.0.1:${port}`;
+  const proc = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no"], {
+    stdio: "ignore",
+  });
+  proc.on("error", () => {});
+  if (!(await waitForRedis(url))) {
+    proc.kill();
+    throw new Error("redis-server could not be started. Set REDIS_URL to use an existing Redis instead.");
+  }
+  return { url, stop: () => proc.kill() };
+}
+
+// Removes only the keys this run created.
+async function cleanup(client) {
+  let cursor = "0";
+  do {
+    const [next, keys] = await client.scan(cursor, "MATCH", `${RUN}*`, "COUNT", 200);
+    cursor = next;
+    if (keys.length) await client.del(...keys);
+  } while (cursor !== "0");
 }
 
 async function startServer(store, calls) {
@@ -71,12 +112,13 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
   const redis = await startRedis();
   t.after(redis.stop);
 
-  const ioredis = new Redis(redis.port, "127.0.0.1");
-  const nodeRedis = createClient({ url: `redis://127.0.0.1:${redis.port}` });
+  const ioredis = new Redis(redis.url);
+  const nodeRedis = createClient({ url: redis.url });
   await nodeRedis.connect();
-  t.after(() => {
+  t.after(async () => {
+    await cleanup(ioredis);
     ioredis.disconnect();
-    return nodeRedis.quit();
+    await nodeRedis.quit();
   });
 
   const clients = [
@@ -86,7 +128,7 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
 
   for (const [name, client] of clients) {
     await t.test(`${name}: setIfAbsent, get and delete`, async () => {
-      const store = new RedisIdempotencyStore(client, { keyPrefix: `${name}-a:` });
+      const store = new RedisIdempotencyStore(client, { keyPrefix: `${RUN}${name}-a:` });
       assert.equal(await store.get("k"), null);
       assert.equal(await store.setIfAbsent("k", { status: "STARTED", fingerprint: "f" }, 5000), true);
       assert.equal(await store.setIfAbsent("k", { status: "COMPLETED" }, 5000), false);
@@ -98,7 +140,7 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
     });
 
     await t.test(`${name}: keys expire through the Redis ttl`, async () => {
-      const store = new RedisIdempotencyStore(client, { keyPrefix: `${name}-b:` });
+      const store = new RedisIdempotencyStore(client, { keyPrefix: `${RUN}${name}-b:` });
       await store.set("k", { status: "COMPLETED" }, 60);
       assert.ok(await store.get("k"));
       await sleep(120);
@@ -107,7 +149,7 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
     });
 
     await t.test(`${name}: 50 concurrent claims produce exactly one winner`, async () => {
-      const store = new RedisIdempotencyStore(client, { keyPrefix: `${name}-c:` });
+      const store = new RedisIdempotencyStore(client, { keyPrefix: `${RUN}${name}-c:` });
       const results = await Promise.all(
         Array.from({ length: 50 }, () => store.setIfAbsent("k", { status: "STARTED" }, 5000)),
       );
@@ -115,14 +157,14 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
     });
 
     await t.test(`${name}: prefix is applied to the stored key`, async () => {
-      const store = new RedisIdempotencyStore(client, { keyPrefix: `${name}-d:` });
+      const store = new RedisIdempotencyStore(client, { keyPrefix: `${RUN}${name}-d:` });
       await store.set("abc", { status: "COMPLETED" }, 5000);
-      assert.ok(await client.get(`${name}-d:abc`));
+      assert.ok(await client.get(`${RUN}${name}-d:abc`));
     });
 
     await t.test(`${name}: a corrupted entry is treated as missing`, async () => {
-      const store = new RedisIdempotencyStore(client, { keyPrefix: `${name}-e:` });
-      await client.set(`${name}-e:bad`, "{not json");
+      const store = new RedisIdempotencyStore(client, { keyPrefix: `${RUN}${name}-e:` });
+      await client.set(`${RUN}${name}-e:bad`, "{not json");
       assert.equal(await store.get("bad"), null);
     });
   }
@@ -130,8 +172,8 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
   await t.test("two separate servers sharing Redis never run the same request twice", async () => {
     const calls = { count: 0 };
     // Each server has its own store object and its own middleware, like two real processes.
-    const serverA = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: "two:" }), calls);
-    const serverB = await startServer(new RedisIdempotencyStore(nodeRedis, { keyPrefix: "two:" }), calls);
+    const serverA = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: `${RUN}two:` }), calls);
+    const serverB = await startServer(new RedisIdempotencyStore(nodeRedis, { keyPrefix: `${RUN}two:` }), calls);
     t.after(() => {
       serverA.stop();
       serverB.stop();
@@ -157,11 +199,11 @@ test("RedisIdempotencyStore", { skip }, async (t) => {
 
   await t.test("a stored response survives a new store object (server restart)", async () => {
     const calls = { count: 0 };
-    const first = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: "restart:" }), calls);
+    const first = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: `${RUN}restart:` }), calls);
     assert.equal((await first.pay("k")).status, 201);
     first.stop();
 
-    const second = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: "restart:" }), calls);
+    const second = await startServer(new RedisIdempotencyStore(ioredis, { keyPrefix: `${RUN}restart:` }), calls);
     t.after(second.stop);
     const replay = await second.pay("k");
     assert.equal(replay.headers.get("x-cache-lookup"), "HIT - Idempotent");

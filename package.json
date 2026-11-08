@@ -1,5 +1,5 @@
 {
-  "name": "@http-state/idempotency-shield",
+  "name": "@masumraihan/idempotency-shield",
   "version": "1.0.0",
   "description": "An HTTP idempotency component for Express and NestJS complying with IETF standards.",
   "keywords": [
@@ -11,7 +11,7 @@
     "interceptor",
     "http"
   ],
-  "author": "Masum Raihan",
+  "author": "",
   "license": "ISC",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -54,7 +54,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc",
+    "build": "node init && npm run clean && tsc",
     "test": "npm run build && node --test test/storage.test.cjs test/express.test.cjs test/nest.test.cjs test/redis.test.cjs",
     "prepublishOnly": "npm test",
     "demo": "npm run build && node examples/scenario.cjs",

@@ -122,3 +122,24 @@ To use another database, implement `IdempotencyStore`. Its `setIfAbsent` must be
 - Register the Express middleware after body parsers.
 - Replayed responses do not include `Set-Cookie`, `Date`, `Content-Length` or connection-level headers.
 - The NestJS interceptor is tested on the Express platform. Fastify is not covered by the tests.
+
+## Running the tests
+
+```bash
+npm install
+npm test
+```
+
+The Redis tests need a Redis server. They use an installed `redis-server` if there is one. Otherwise point them at
+a running Redis with `REDIS_URL`; the tests only create and remove keys starting with `idem-test-`:
+
+```bash
+# bash / Git Bash
+REDIS_URL=redis://127.0.0.1:6379 npm test
+
+# PowerShell
+$env:REDIS_URL="redis://127.0.0.1:6379"; npm test
+```
+
+For a disposable Redis, use `docker run --rm -p 6390:6379 redis:7-alpine` and
+`REDIS_URL=redis://127.0.0.1:6390`. Without Redis, the Redis tests are skipped and everything else still runs.
